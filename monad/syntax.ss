@@ -1,0 +1,88 @@
+(import (for-syntax :std/stxutil :std/stxparam)
+        :std/contract :std/stxparam)
+(export #t)
+
+#;(defsyntax-parameter* @du-bind @@du-bind
+  "Bad Syntax: @du-bind only valid within a `(du (using ...) ...)` block")
+(defsyntax (du stx)
+  (syntax-case stx (:bind)
+    ((d (id expr ... ~ contract) body ...)
+     (and (identifier? #'id)
+        (identifier? #'~)
+        (or (free-identifier=? #'~ #':)
+            (free-identifier=? #'~ #':-)
+            (free-identifier=? #'~ #':~)))
+     (with-syntax ((bind (format-id #'id "~a.bind" #'id))
+		   (bindfn (datum->syntax #'d '%monad-bind-fn)))
+       #'(using (id expr ... ~ contract)
+	   (let (bindfn (cut bind <> <>))
+	   ;(syntax-parameterize ((@@du-bind (quote-syntax bindfn)))
+  	     (du :bind bind body ...)))))
+       ;)
+    ((_ ~ bind var <~ exp body ...)
+     (and (identifier? #'~)
+	  (identifier? #'<~)
+	  (free-identifier=? #'~ #':bind)
+	  (free-identifier=? #'<~ #'<-))
+     #'(bind exp (lambda (var) (du :bind bind body ...))))
+    ((_ ~ bind result)
+     (and (identifier? #'~)
+	  (free-identifier=? #'~ #':bind))
+     #'result)
+    ((_ ~ bind form body ...)
+     (and (identifier? #'~)
+	  (free-identifier=? #'~ #':bind))
+     #'(bind form (lambda _ (du :bind bind body ...))))
+    ((d nested ...)
+     (with-syntax ((bindfn (datum->syntax #'d '%monad-bind-fn)))
+     #'(du :bind bindfn nested ...)))))
+
+(defsyntax (type stx)
+ (syntax-case stx ()
+  ((_ name)
+    (with-syntax ((export-typename (format-id #'name "~a::class" #'name))
+                  (module-name (format-id #'name "~a::module" #'name))
+                  (singleton (format-id #'name "~a::singleton" #'name)))
+  #'(begin
+      (module module-name
+	(export (rename-out #t (name export-typename)))
+	(defstruct name ())
+	(def singleton (name)))
+      (import module-name)
+      (def name singleton))))))
+
+(defsyntax (instance stx)
+  (syntax-case stx ()
+    ((_ interface (instance self) methods ...)
+     (let lp ((rest #'(methods ...)) (body []))
+	(syntax-case rest ()
+	  ((m . rest)
+	   (syntax-case #'m ()
+	     (((name . arg) bdy ...)
+	      (lp #'rest (cons #'(bind-method! klass 'name 
+				   (lambda (self . arg) bdy ...) #t)
+		       body)))
+	     (((name args ...) bdy ...)
+	      (lp #'rest (cons #'(bind-method
+			  klass 'name
+				  (lambda (self args ...) bdy ...) #t)
+			       body)))))
+	  
+	  (() (let (ti? (syntax-local-type-info? #'instance))
+		(with-syntax* (((values iname)
+				(if ti?
+	       			  (syntax-local-value #'instance)
+			       (values #'instance)
+			       ))
+	      		     (type::t (if ti?
+	       				(runtime-type-identifier iname)
+				        #'(##structure-type instance)))
+			      )
+
+		(cons* 'let #'(klass type::t)
+		               
+		       (reverse body))))))))
+
+
+    ((macro interface instance methods ...)
+     #'(macro interface (instance instance) methods ...))))

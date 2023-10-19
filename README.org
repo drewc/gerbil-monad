@@ -1,0 +1,1022 @@
+#+TITLE: Monads in Gerbil
+
+Here's the thing. I need to parse some older texinfo to convert it to
+nicer formats. I like my Monadic Parser.
+
+It uses monads. Gerbil now has a very fast Interface that can make it
+quick and easy. This is my attempt to Monadize Gerbil.
+
+ https://wiki.haskell.org/All_About_Monad
+
+* What is a Monad exactly?
+
+#+begin_quote
+*monad*, (from Greek /monas/ “unit”), an elementary individual
+substance that reflects the order of the world and from which material
+properties are derived. [...]
+
+The objects of the material world are simply appearances of
+collections of monads.
+
+-- https://www.britannica.com/topic/monad
+#+end_quote
+
+In the abstract programming sense, a =Monad= is a generic way of
+looking at a problem with a specific *soul*-ution almost hidden within
+the wrapper.
+
+It's a strategy for going about a wide range of problems. It starts
+with two abstractions, =return= and =bind= that help to encompass
+almost everything.
+
+There are many different forms to make this abstraction concrete. They
+all come together as =Monad='s!
+
+
+** A =struct= with two =slots=
+:PROPERTIES:
+:header-args:scheme: :tangle ./doc/simple-struct.ss :mkdirp t
+:END:
+A struct with =return= and =bind= as easy to understand as an
+implementation.
+
+#+begin_src scheme 
+  (defstruct monad
+    (;; return : a -> m a
+     return 
+     ;; bind : m a -> (a -> m b) -> m b
+     bind))
+#+end_src
+
+Those comments are saying what they should do. We'll get into that
+later. For now, the most basic specialization.
+
+*** The =Identity= monad
+
+Just as the =identity= function does nothing save for return what was
+passed the =Identity= monad does the same thing. But it follows the monad laws.
+
+#+begin_src scheme
+  (def Identity (make-monad identity (lambda (ma f) (f ma)))))
+#+end_src
+
+The first rule is that =return= gives the =Monadic Value= of the =Value= it was
+passed. For =Identity= thats, well, =identity=.
+
+The second rule is that =bind=, when given a =Monadic Value=, calls a
+function with the =Value= and returns a possibly different =Monadic
+Value=. This is a =Monadic Function= and =return= is a simple example
+of one.
+
+*** The Answer predicate in monad form
+
+We want to know if _something_ is at some point the answer to Life The
+Universe And Everything. Here's a long form with the Identity monad.
+
+First the basic predicate.
+
+#+begin_src scheme
+  (import :std/test)
+  (def ltuae? (cut equal? 42 <>))
+#+end_src
+
+Now turn that into a monadic function.
+
+#+begin_src scheme
+  (def (the-answer-to? monad thing) ((monad-return monad) (ltuae? thing))) 
+#+end_src
+
+And a test predicate that when passed a monadic value binds and tests it.
+
+#+begin_src scheme
+  (def (monad-is-the-answer-to? monad ma)
+    ((monad-bind monad) ma (cut the-answer-to? monad <>)))
+#+end_src
+
+Using that we see at the REPL if the monadic value (=ma=) passed is
+the answer to life, the universe, and everything.
+
+#+begin_src scheme :tangle no
+  (check (monad-is-the-answer-to? Identity 42) => #t)
+#+end_src
+
+Now that may at first seen like a very long winded way but with some
+syntax and some other monads the use becomes quickly apparent.
+
+*** A =map= form becomes a =List= monad
+
+Since this is a LISP dialect we have lists! Let's say we're given a list of numbers and we want to know 
+any/all of them are *The Answer*.
+
+That's fairy easy with the =map= function.
+
+#+begin_src scheme
+  (map (cut monad-is-the-answer-to? Identity <>)
+       '(foo (bar baz) 42 #t))
+    ;;=> (#f #f #t #f)
+#+end_src
+
+But what if there's a monad that does just that?
+
+#+begin_src scheme
+  (def List
+   (monad
+    list
+    ;; bind :: [a] -> (a -> [b]) -> [b]
+    (lambda (lst fn) (concatenate (map fn lst)))))
+#+end_src
+
+So a monadic value is a list, and the bind runs through them.
+
+#+begin_src schene
+> (monad-return List) 1)
+(1)
+> ((monad-bind List) '(1 2 3 4) (lambda (n) ((monad-return List) (+ n 42)))) 
+(43 44 45 46)
+#+end_src
+
+And is monad = 42?
+
+#+begin_src scheme
+  (check (monad-is-the-answer-to? List '(foo (bar baz) 42 #t))
+   => '(#f #f #t #f))
+#+end_src
+
+Well that's interesting! We just pass a different monad, the function
+stays the same, and the results are a different monadic value type.
+
+*** When =zero= and =plus= make =List= more like =lists=.
+
+The =List= monad as we have it does not really let the user interact
+with lists from within a =bind= standpoint. We can go even further
+back and derive it from some maths with =zero= (AKA =[]=) band =plus=
+(AKA =append=).
+
+#+begin_src scheme
+  (defstruct (monad-zero-plus monad) (zero plus))
+#+end_src
+
+#+begin_src scheme
+  (def List
+   (monad-zero-plus
+    list
+    ;; bind :: [a] -> (a -> [b]) -> [b]
+    (lambda (lst fn) (concatenate (map fn lst)))
+    ;; zero :: []
+    (lambda _ [])
+    ;; plus :: append
+    append))
+#+end_src
+
+So we could use =plus= to create our list from monadic values.
+
+#+begin_src scheme
+  (def possible-answers
+    ((monad-zero-plus-plus List)
+     ((monad-return List) 'foo)
+     ((monad-return List) '(bar baz))
+     ((monad-return List) 42)
+     ((monad-return List) #t)))
+
+  (check possible-answers => '(foo (bar baz) 42 #t))
+#+end_src
+
+And =zero= could be used to back up a step and use =the-answer-to?= to
+remove non-answers.
+
+#+begin_src scheme
+  (def (maybe-the-answer-to? ma (m List))
+    ((monad-bind m)
+     ma (lambda (a)
+  	(if (ltuae? a)
+  	  ((monad-return m) #t) 
+  	  ((monad-zero-plus-zero m))))))
+
+  (check (maybe-the-answer-to? possible-answers) => '(#t))
+#+end_src
+
+
+That's cool and everything but really verbose and low level. Because
+this is Scheme there's a syntactic way around that.
+
+
+*** Using =using= for type interaction.
+
+A struct as an object is an instance of a struct type. So our =List=
+is of the type =monad-zero-plus=. Because of that we can abbreviate
+using =using=.
+
+Have a look [[https://cons.io/reference/std/contract.html#using][here]] for the documentation on it.
+
+#+begin_src scheme
+  (import :std/contract)
+
+  (def more-answers
+    (using (l List : monad-zero-plus)
+      (apply l.plus (map l.return '(foo (bar baz) 42 #t)))))
+
+  (def (lift m f . args) (using (m : monad) (m.return (apply f args)))) 
+    
+    
+  (def (maybe-more-answers-to? ma (m List))
+    (using (m : monad)
+      (m.bind ma (cut lift m ltuae? <>))))
+
+
+#+end_src
+
+*** The =state= monad
+
+In a purely functional language there are no mutatable globals or
+parameters to store state. Often it's just passed through or
+"threaded" along with the other results.
+
+But we can just wrap it with a function. That's the =state= monad.
+
+#+begin_src scheme
+  (defstruct (state monad) (get set))
+
+  (def State
+    (make-state
+     (lambda (a) (cut cons a <>))
+     (lambda (ma f)
+       (lambda (s) (with ([v . ns] (ma s)) ((f v) ns))))
+     (lambda () (lambda (s) [s . s]))
+     (lambda (s) (lambda _ [s . s]))))
+
+#+end_src
+
+
+Now =State= is an instance of =state= which capitalization-wise seems
+totally backwards but don't worry, that will be dealt with later on
+
+=ma=, the old monadic value, is just a function that takes the
+state and may or may not do anything with it then returns a pair of
+=[return-value . state]=.
+
+The =return= is takes a value and returns an =ma= where the function
+returns that value in the cons along with the state.
+
+Now =bind= returns a function that takes that runs the =ma= to get a
+=[value . new-state]=, then runs the passed =f= with the =value=, then
+runs the returned procedure with the =new=state=.
+
+That's the threading taken care of. The =get= and =set= speak for
+themselves.
+
+So using our last =maybe-more= but with our =ma= returns a function
+that takes state. So many different uses of the state word! But I
+digress.
+
+#+begin_src scheme
+  (check (maybe-more-answers-to? (using (s State : state) (s.return 42)) State)
+         ? procedure?)
+
+  (check ((maybe-more-answers-to? (using (s State : state) (s.return 42)) State)
+  	'is-the-answer)
+         => (cons #t 'is-the-answer))
+#+end_src
+
+
+Using =using= did somewhat shorten it but that's stil, at least to my,
+very long form for everything. Sure, =return= and =bind= put these
+=monad=, =monad-zero-plus=, and =state= structs is the same
+catagory. Also they are really all using a very primitive =ltuae?=
+predicate.
+
+So we are kind of there in explaining what a monad is. But it's not
+that simple, though it is very simple, which is one of the problems
+with explanations. "Ok, =return=, =bind=, right? 42!".
+
+Let's move on.
+
+* The =du= syntax
+
+Binding variables is a big part of programming. Sequential steps down
+a path are also important, as well as knowing what has passed. 
+
+In =Lisp= the =let*= form is kinda what I'm talking about. The =begin=
+form plays a role as well.
+
+In =Haskell= this is called =do= but that's already taken and as luck
+would have it =using= is a part of our "Do Using" (aka =du=) so it all
+works out.
+
+#+begin_src scheme :tangle monad/syntax.ss :mkdirp t
+    (import (for-syntax :std/stxutil :std/stxparam)
+            :std/contract :std/stxparam)
+    (export #t)
+
+    #;(defsyntax-parameter* @du-bind @@du-bind
+      "Bad Syntax: @du-bind only valid within a `(du (using ...) ...)` block")
+    (defsyntax (du stx)
+      (syntax-case stx (:bind)
+        ((d (id expr ... ~ contract) body ...)
+         (and (identifier? #'id)
+            (identifier? #'~)
+            (or (free-identifier=? #'~ #':)
+                (free-identifier=? #'~ #':-)
+                (free-identifier=? #'~ #':~)))
+         (with-syntax ((bind (format-id #'id "~a.bind" #'id))
+    		   (bindfn (datum->syntax #'d '%monad-bind-fn)))
+           #'(using (id expr ... ~ contract)
+    	   (let (bindfn (cut bind <> <>))
+    	   ;(syntax-parameterize ((@@du-bind (quote-syntax bindfn)))
+      	     (du :bind bind body ...)))))
+           ;)
+        ((_ ~ bind var <~ exp body ...)
+         (and (identifier? #'~)
+    	  (identifier? #'<~)
+    	  (free-identifier=? #'~ #':bind)
+    	  (free-identifier=? #'<~ #'<-))
+         #'(bind exp (lambda (var) (du :bind bind body ...))))
+        ((_ ~ bind result)
+         (and (identifier? #'~)
+    	  (free-identifier=? #'~ #':bind))
+         #'result)
+        ((_ ~ bind form body ...)
+         (and (identifier? #'~)
+    	  (free-identifier=? #'~ #':bind))
+         #'(bind form (lambda _ (du :bind bind body ...))))
+        ((d nested ...)
+         (with-syntax ((bindfn (datum->syntax #'d '%monad-bind-fn)))
+         #'(du :bind bindfn nested ...)))))
+
+
+
+
+
+         
+#+end_src
+
+We can get a lot without having to nest =bind='s.
+
+#+begin_src scheme
+    (check ((du (s State : state)
+      foo <- (s.get)
+      (s.set 1)
+      bar <- (s.get)
+      (s.set 'is-the-answer-to-ltuae)
+      (s.return (+ foo bar))) 41)
+  => (cons 42 'is-the-answer-to-ltuae))
+#+end_src
+
+* The =interface= AKA =typeclass= monad definition
+
+Our struct implementation has the slots holding functions. That
+kinda/sorta makes them methods.
+
+Gerbil has an incredible =interface= definition and usage. They are
+practically typeclasses.
+
+
+Have a look [[https://cons.io/reference/std/interface.html][at the docs]] for information on how they work.
+
+#+begin_src scheme :tangle monad/interface.ss
+  (import :std/interface)
+  (export #t (interface-out unchecked: #t MonadState Monad MonadState MonadTrans))
+
+  (interface Monad (return a) (bind ma f))
+   
+  (interface (MonadPlus Monad) (zero) (plus x y))
+
+  (interface (MonadState Monad) (get) (set s))
+
+  (interface (MonadTrans Monad) (lift))
+#+end_src
+
+What does that do? Now a monad is not a struct type but an an
+interface to instances.
+
+So using structs as-is gives us this.
+
+#+begin_src scheme
+  (defstruct identity ())
+  (def Identity (make-identity))
+  (defmethod {return identity} (lambda (_ a) a))
+  (defmethod {bind identity} (lambda (_ ma f) (f ma)))
+#+end_src
+
+That works but is long winded. Here's the =Haskell= version,
+
+#+begin_src haskell
+newtype Identity a = Identity { runIdentity :: a }
+
+instance Monad Identity where
+    return a           = Identity a   -- i.e. return = id
+    (Identity x) >>= f = f x          -- i.e. x >>= f = f x
+#+end_src
+
+I think we can recreate that with even shorter syntax!
+
+#+begin_src scheme :tangle monad/Identity.ss
+  (import ./syntax) 
+#+end_src
+* The =type= form for a =singleton=
+
+In the =Gofer= language it's not called =newtype= but just shortened to =type=.
+
+#+begin_src haskell
+type Parser = String -> [(Tree,String)]
+#+end_src
+
+We don't care about what comes after the === sign and really just want ~(type Identity)~ to work.
+
+#+begin_src scheme :tangle monad/syntax.ss
+  (defsyntax (type stx)
+   (syntax-case stx ()
+    ((_ name)
+      (with-syntax ((export-typename (format-id #'name "~a::class" #'name))
+                    (module-name (format-id #'name "~a::module" #'name))
+                    (singleton (format-id #'name "~a::singleton" #'name)))
+    #'(begin
+        (module module-name
+  	(export (rename-out #t (name export-typename)))
+  	(defstruct name ())
+  	(def singleton (name)))
+        (import module-name)
+        (def name singleton))))))
+#+end_src
+
+That works!
+
+#+begin_src scheme :tangle monad/Identity.ss
+  (type Identity)
+#+end_src
+
+* Now an =instance= form for Singleton =type='s AND =struct='s
+
+#+begin_src scheme :tangle monad/syntax.ss
+  (defsyntax (instance stx)
+    (syntax-case stx ()
+      ((_ interface (instance self) methods ...)
+       (let lp ((rest #'(methods ...)) (body []))
+  	(syntax-case rest ()
+  	  ((m . rest)
+  	   (syntax-case #'m ()
+  	     (((name . arg) bdy ...)
+  	      (lp #'rest (cons #'(bind-method! klass 'name 
+  				   (lambda (self . arg) bdy ...) #t)
+  		       body)))
+  	     (((name args ...) bdy ...)
+  	      (lp #'rest (cons #'(bind-method
+  			  klass 'name
+  				  (lambda (self args ...) bdy ...) #t)
+  			       body)))))
+  	  
+  	  (() (let (ti? (syntax-local-type-info? #'instance))
+  		(with-syntax* (((values iname)
+  				(if ti?
+  	       			  (syntax-local-value #'instance)
+  			       (values #'instance)
+  			       ))
+  	      		     (type::t (if ti?
+  	       				(runtime-type-identifier iname)
+  				        #'(##structure-type instance)))
+  			      )
+
+  		(cons* 'let #'(klass type::t)
+  		               
+  		       (reverse body))))))))
+
+
+      ((macro interface instance methods ...)
+       #'(macro interface (instance instance) methods ...))))
+#+end_src
+
+So our Identity monad is simple.
+
+#+begin_src scheme :tangle monad/Identity.ss
+  (instance Monad Identity
+    ((return a) a)
+    ((bind ma f) (f ma)))
+#+end_src
+
+
+* The =List= monad
+
+#+begin_src scheme :tangle monad/List.ss
+  (import ./syntax :std/srfi/1) (export #t)
+  (type List)
+
+  (instance Monad List
+    ((return a) [a])
+    ((bind ma f) (concatenate (map f ma))))
+
+  (instance MonadPlus List
+    ((zero) [])
+    ((plus . lsts) (concatenate lsts)))
+
+  (instance MonadFail List
+    ((fail _) []))
+#+end_src
+
+ 
+* =State= and =StateT= Transformer 
+:PROPERTIES:
+:CUSTOM_ID: StateT
+:END:
+
+The state transformer is fairly simple as we wrap the =[value
+. state]= in the other monad and unwrap it for bind.
+
+#+begin_src scheme :tangle monad/State.ss
+  (import ./syntax ./interface) (export #t)
+
+  (defstruct StateT (inner))
+
+  (instance Monad (StateT st)
+    ((return a) (lambda (s) (du (m (StateT-inner st) : Monad) (m.return [a . s]))))
+    ((bind ma f)
+     (lambda (s) (du (m (StateT-inner st) : Monad) pair <- (ma s)
+  		   (with ([v . ns] pair) ((f v) ns))))))
+#+end_src
+
+It's a =MonadState= innit?
+
+#+begin_src scheme :tangle monad/State.ss
+  (instance MonadState (StateT st)
+    ((get) (lambda (s) (du (m (StateT-inner st) : Monad) (m.return [s . s]))))
+    ((set s) (lambda (_)  (du (m (StateT-inner st) : Monad) (m.return [s . s])))))
+#+end_src
+
+It could be transforming any type of monad.
+
+#+begin_src scheme :tangle monad/State.ss
+  (instance MonadPlus (StateT st)
+    ((zero) (lambda _ (du (m (StateT-inner st) : MonadPlus) (m.zero))))
+    ((plus x y)
+     (lambda (s) (du (m (StateT-inner st) : MonadPlus)
+  	    (m.plus (x s) (y s))))))
+#+end_src
+
+* Failure is always an option! The =Maybe= monad
+:PROPERTIES:
+:CUSTOM_ID: MonadFail
+:END:
+
+There's a monad for failure.
+
+#+begin_src scheme :tangle monad/interface.ss
+  (interface (MonadFail Monad) (fail a))
+#+end_src
+
+An example is the =Maybe= type that "stops" when a =Nothing= is
+encountered.
+
+#+begin_src scheme
+  (type Maybe)
+  (type Nothing)
+
+  (instance Monad Maybe
+   ((return x) x)
+   ((bind ma f) (if (eq? ma Nothing) ma (f ma))))
+
+  (instance MonadFail Maybe
+    ((fail _) Nothing))
+
+  (instance MonadPlus Maybe
+    ((zero) Nothing)
+    ((plus x y) (if (eq? x Nothing) y)))
+#+end_src
+
+We can use that to exit without needing to worry about it.
+
+Imagine we cannot continue if the number is even and we have a super
+long chain of functions that may take for ever.
+
+#+begin_src scheme
+  (interface (SuperLong Monad MonadFail MonadPlus)
+    (super-long-function x))
+
+  (instance SuperLong Maybe
+    ((super-long-function x)
+     (du (m Maybe : SuperLong)
+       (if (not (and (number? x) (odd? x))) (m.fail "even or not a number")
+  	 (begin (displayln "Sleeping for " x)
+  		 (sleep x)
+  	   (m.return x))))))
+#+end_src
+
+It will only superlong if it needs to.
+
+#+begin_src scheme
+  (du (s Maybe : SuperLong)
+    x <- (s.super-long-function (random-integer 1024))
+    y <- (s.super-long-function (+ x (random-integer 1024)))
+    z <- (s.super-long-function (+ y (random-integer 1024)))
+    (s.return z))
+#+end_src
+
+
+* The =MonadError=: exception handling
+
+Sometimes [[#MonadFail][failing]] at something means something very different than
+doing something wrong. For example in our [[file:Parser.org][Parser Monad]] a failure means
+this was not parsed as that, An error means it SHOULD parse as that
+but didn't and cannot go further.
+
+We all know the terms. The Monadic =throw/catch= is very similar to
+any other such things built in to many languages. But this higher
+level.
+
+
+#+begin_src scheme :tangle monad/interface.ss
+  (interface (MonadError Monad)
+    (throw e)
+    (catch body handler))
+#+end_src
+
+Haskell has an =Either= type which can be an instance of
+=MonadError=. It's either =Left= or =Right= with "right" meaning
+"correct" and "left" meaning "wrong".
+
+#+begin_src scheme
+  (defstruct Either (left right) constructor: :init!)
+  (defmethod {:init! Either} (lambda (self left: (left #f) right: (right #t))
+  			     (set! (Either-left self) left)
+  			     (set! (Either-right self) right)))
+
+#+end_src
+
+Make it into a monad.
+
+#+begin_src scheme
+  (instance Monad (Either e)
+   ((return x) (if (Either-left e) e (set! (Either-right e) x)))
+   ((bind ma f) (if (Either-left e) e (f ma))))
+
+  (instance MonadState (Either e)
+    ((get) (Either-right e))
+    ((set right) (set! (Either-right e) right)))
+
+  (instance MonadError (Either e)
+    ((throw err) (set! (Either-left e) err))
+    ((catch bdy handler)
+     (let (err (Either-left e))
+       (set! (Either-left e) #f)
+       (if err (handler err) bdy))))
+                        
+  (instance MonadFail (Either e)
+    ((fail err) (du (e : MonadError) (e.throw err))))
+#+end_src
+
+Now what happens?
+
+#+begin_src scheme
+   (interface (Meither MonadError MonadState)) 
+
+   (def (error-handler e error)
+     (du (e : Meither)
+       s <- (e.get)
+       (displayln "Thrown: " error "\nState: " s)))
+
+   (def (throw-answer e)
+     (du (e : Meither)
+       a <- (e.return 42)
+       b <- (e.throw "Get the answer to LTUAE")
+       c <- (e.return (+ 1 a))
+       (displayln "This is never run")
+       c))
+
+   (def (run-answer e) 
+     (du (e : Meither)
+       a <- (e.return 42)
+       (displayln "This is aways run")
+       a))
+   	     
+   (du (e (Either) : MonadError) 
+     (e.catch (throw-answer e) (cut error-handler e <>))
+     (e.catch (run-answer e) (cut error-handler e <>)))
+
+   ;; Prints =>
+   ;; Thrown: Get the answer to LTUAE
+   ;; State: 42
+   ;; This is aways run
+
+   ;; returns => 42
+#+end_src
+
+Well that's cool but it's wrapping that makes it usable. =ErrorT= to the rescue.
+
+* Wrapping with =ErrorT=
+
+This is really simple and I think it's the last one I need for the Parser.
+
+Imagine there's a predicate that determines if the value is an
+error. Like, say, =Error?=.
+
+#+begin_src scheme :tangle monad/Error.ss
+  (import :std/contract (for-syntax :std/stxutil)
+  	./syntax ./interface)
+  (export #t)
+
+  (defstruct Error (string irritants)
+    transparent: #t
+    constructor: :init!)
+  (defmethod {:init! Error}
+    (lambda (err string . irritants)
+      (set! (Error-string err) string)
+      (set! (Error-irritants err) irritants)
+      err))
+#+end_src
+
+Then the =ErrorT= structure has one required parameter:
+
+  - inner :: The inner =Monad= to transform.
+
+It has 3 optional values passed as keywords to the constructor.
+  - type: :: The struct type AKA klass AKA =struct::t= that if an
+    instance is passed determines the value is in fact an error.  If
+    #f or not a struct klass the other two parameters are
+    neccesary. Defaults to =Error::t=
+  - is-error?: :: The predicate to determine whether a bound value is
+    an error. Defaults to a predicate of the =type=.
+  - make-error:  :: The constructor for an error. Defaults to the
+    contructor of the =type=.
+
+    
+#+begin_src scheme :tangle monad/Error.ss
+  (defstruct ErrorT (inner type is-error? make-error) constructor: :init!)
+  (defmethod {:init! ErrorT}
+    (lambda (self inner type: (type::t Error::t) is-error?: (pred #f) make-error: (mk #f))
+      (unless pred (set! pred (make-struct-predicate type::t)))
+      (unless mk (set! mk (cut make-struct-instance type::t <...>)))
+      (using (e self : ErrorT)
+        (set! e.inner inner)
+        (set! e.type type::t)
+        (set! e.is-error? pred)
+        (set! e.make-error mk)))
+     rebind: #t)
+#+end_src
+
+Then the bind definition becomes simple.
+
+#+begin_src scheme  :tangle monad/Error.ss
+  (instance Monad (ErrorT et)
+    ((return a) (du (i (ErrorT-inner et) : Monad) (i.return a)))
+    ((bind ma f)
+     (using (et : ErrorT)
+       (if (et.is-error? ma) ma (du (i et.inner : Monad) (i.bind ma f))))))
+#+end_src
+
+Because of how it's set up we can short circuit without needing
+=throw=.
+
+#+begin_src scheme
+  > (du (e (ErrorT Identity) : Monad)
+      a <- 42
+      b <- (Error "Short Circuit: ~a" a)
+      c <- 1
+     (+ a c))
+  #<Error #32 string: "Short Circuit: ~a" irritants: (42)`
+#+end_src
+
+Setting the predicate deals with the short.
+
+#+begin_src scheme
+> (du (e (ErrorT Identity is-error?: false) : Monad)
+    a <- 42
+    b <- (Error "Short Circuit: ~a" a)
+    c <- 1
+   (+ a c))
+43
+#+end_src
+
+
+#+begin_src scheme  :tangle monad/Error.ss
+  (defsyntax (call-inner stx)
+    (syntax-case stx ()
+      ((_ (p Type Interface) id args ...)
+       (with-syntax* ((inner (format-id #'p "~a.inner" #'p))
+  		    (iref (format-id #'p "%~a_~a%" #'p #'Interface))
+  		    (iid (format-id #'id "~a.~a" #'iref #'id)))
+         #'(using ((p : Type) (iref inner : Interface)) (iid args ...))))))
+   
+  (instance MonadError (ErrorT et)
+    ((throw args) (apply (ErrorT-make-error et) args))
+    ((catch ma handler)
+     (if ((ErrorT-is-error? et) ma) (handler ma) ma)))
+
+  (instance MonadFail (ErrorT et)
+    ((fail arg) (call-inner (et ErrorT MonadFail) fail arg)))
+
+  (instance MonadPlus (ErrorT et)
+    ((zero) (call-inner (et ErrorT MonadPlus) zero))
+    ((plus x y) (call-inner (et ErrorT MonadPlus) plus x y)))
+
+  (instance MonadState (ErrorT et)
+    ((get) (call-inner (et ErrorT MonadState) get))
+    ((set thing) (call-inner (et ErrorT MonadState) set thing)))
+#+end_src
+
+* General Monad Utility Functions
+
+
+
+#+begin_src scheme :tangle ./monad/util.ss
+  (import ./interface ./syntax
+  (def (liftM m f)
+    (lambda (x)
+      (du (m : Monad)
+        y <- x
+        (m.return (f y)))))
+#+end_src
+
+* The =Monad= module
+
+#+begin_src scheme :tangle Monad.ss
+    (import ./monad/interface ./monad/syntax
+      ./monad/util)
+    (export (import: ./monad/interface))
+#+end_src
+
+
+
+* Gerbil
+
+#+begin_src scheme :tangle ./build.ss :shebang #!/usr/bin/env gxi
+  ;;; -*- Gerbil -*-
+  (import :std/build-script)
+
+  (defbuild-script
+    '("monad/syntax"
+      "monad/interface"
+      "monad/util"
+      "monad/Identity"
+      "monad/List"
+      "monad/State"
+      "monad/Error"
+      "monad/Parser"
+
+      "Monad"))
+
+#+end_src
+
+
+
+* Emacs
+
+#+begin_src emacs-lisp
+  (gerbil-set-indent '(du) 1)
+  (gerbil-set-indent '(instance) 2)
+#+end_src
+
+
+* Append me
+https://en.wikibooks.org/wiki/Haskell/do_notation
+
+#+begin_src scheme
+  (defmethod {LTUAE? monad}
+   (lambda (m) (lambda (a) {return m (equal? a 42)})))
+
+  (let* ((value 42)=
+         (monadic-value {return Identity value})
+         (monadic-function (lambda (value) {return Identity (equal? value 42)})))
+    {bind Identity monadic-value monadic-function})
+#+end_src
+
+Let's make a concrete foundation. The =answer?= predicate.
+
+
+
+
+
+
+
+
+
+
+
+In a static language it has a type constructor and that concept happens to line up with our [[https://cons.io/reference/std/interface.html][Interface]]s almost exactly.
+
+** "Type Class", AKA Interface
+
+So, for =Gerbil='s sake, a =Monad= as a "type class" is an =Interface= that has two methods: =return= and =bind=.
+
+#+begin_src scheme :atangle monad/Monad.ss
+    (import :std/interface)
+
+    (interface Monad
+      (return a) ;; a -> m a
+      (bind ma mf) ;; m a -> (a -> m b) -> m b
+      )
+#+end_src
+
+For those who are not familiar with HM types and/or haskell a type class is a strong typed definition what what instances of this type class will do. Very similar to the interface only it's specific at compile time for everything.
+
+The following definition is the strongly typed equivalent. The =>>== form is what Haskell calls =bind=. It's missing the =run= method though many instances do have a way to run them.
+
+#+begin_src haskell
+  class Monad m where
+      (>>=)  :: m a -> (a -> m b) -> m b
+      return :: a -> m a
+#+end_src
+
+Now, those methods it does have, =return= and =bind=, do something specific to make it a monad. That's specified by the typeclass but just in comments for the interface. 
+
+  - =return= :: Wraps a /value/ as this monad. This is known
+    as a /monadic value/. So, like, =a -> m a=.
+
+  - =bind= :: Takes a /monadic value/ and a function. The function
+    receives the /value/ and returns another /monadic value/. This is
+    the first /monadic function/ So, like, =m a -> (a -> m b) -> m b=.
+
+There is nothing in gerbil that enforces this but it does help to know that's all a monad really is.
+
+** An Instance of an "Type Class" is a Struct that has the Interface described.
+
+An interface is not an object or a type but in essence just a map to interact with one. So we need to create a "Type Class" instance.
+
+In our dynamically typed language an instance is also an object that exists at runtime and is not just a type descriptor.
+
+*** The =Identity= Monad.
+
+A Monad that does nothing is a nice start as we just see how the Monad is really an interface.
+
+
+Starting with the Haskell we can see where our interface takes care of the type with =run=.
+
+#+begin_src haskell
+newtype Identity a = Identity { runIdentity :: a }
+
+instance Monad Identity where
+    return a           = Identity a   -- i.e. return = id
+    (Identity x) >>= f = f x          -- i.e. x >>= f = f x
+#+end_src
+
+Here's the long form in Gerbil.
+
+#+begin_src scheme
+  (defstruct Identity ())
+  (defmethod {return Identity} (lambda (_ a) a))
+  (defmethod {run Identity} (lambda (_ a) a))
+  (defmethod {bind Identity} (lambda (_ x f) (f x)))
+#+end_src
+
+While I like the result there's some syntax that will make it better.
+
+#+begin_src scheme
+  (defstruct Identity ())
+  (instance Monad Identity
+    ((return a) a)
+    ((run ma . args) ma)
+    ((bind x f) (f x)))
+#+end_src
+
+Why does it matter? What does it do?
+
+Here's the example: A program takes a monadic instance and binds using the =(current-monad)= to get the wrapped value. If it's 42, the answer to life, the universe, and everything... return true else false.
+
+#+begin_src scheme
+  (def current-monad (make-parameter (Monad (Identity))))
+  (def (bind x f) (Monad-bind (current-monad) x f))
+  (def (return a) (Monad-return (current-monad) a))
+  (def (run ma . args) (apply Monad-run (current-monad) ma args))
+
+
+  (def (answer? ma)
+    (bind ma (lambda (v) (return (eqv? v 42))))) 
+#+end_src
+
+
+#+begin_src scheme
+  (defstruct Identity ())
+  (defmethod {return Identity} (lambda (_ a) a))
+  (defmethod {run Identity} (lambda (_ a) a))
+  (defmethod {bind Identity} (lambda (_ mv mf) (mf mv)))
+
+  (def current-monad (make-parameter (Monad (Identity))))
+
+  (def return (case-lambda ((Monad a) (Monad-return Monad a)) ((a) (Monad-return (current-monad) a))))
+  (def bind (case-lambda ((Monad ma mf) (Monad-bind Monad ma mf)) ((a) (Monad-bind (current-monad) ma mf))))
+#+end_src
+
+#+begin_src scheme
+  (defstruct List ())
+  (defmethod {return List} (lambda (_ a) [a]))
+  (defmethod {bind Identity} (lambda (_ mv mf) (mf mv)))
+#+end_src
+
+* Instance Syntax
+
+
+#+begin_src scheme
+  (defsyntax (instance stx)
+    (syntax-case stx ()
+      ((_ interface instance methods ...)
+       (let lp ((rest #'(methods ...)) (body []))
+  	(syntax-case rest ()
+  	  ((m . rest)
+  	   (syntax-case #'m ()
+  	     (((name . arg) bdy ...)
+  	      (lp #'rest (cons #'(defmethod {name instance}
+  				   (lambda (^instance . arg) bdy ...)
+  				   rebind: #t) body)))
+  	     (((name args ...) bdy ...)
+  	      (lp #'rest (cons #'(defmethod {name instance}
+  				   (lambda (^instance args ...) bdy ...)
+  				   rebind: #t) body)))
+  	     ))
+  	  (() (cons 'begin (reverse body))))))))
+#+end_src
