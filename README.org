@@ -447,7 +447,7 @@ instance Monad Identity where
 I think we can recreate that with even shorter syntax!
 
 #+begin_src scheme :tangle monad/Identity.ss
-  (import ./syntax) 
+  (import ./syntax ../instance) 
 #+end_src
 * The =type= form for a =singleton=
 
@@ -484,160 +484,168 @@ That works!
 * Now an =instance= form for Singleton =type='s AND =struct='s
 
 
+#+begin_src scheme :tangle instance.ss
+  (import (for-syntax :std/stxutil)
+          :std/contract)
+  (export #t)
 
-#+begin_src scheme :tangle monad/syntax.ss
-      (defsyntax (ins stx)
 
-        (def (wrap-using-klass self klass body)
-          (with-syntax (((body ...) body) (self self) (klass klass))
-            (if (identifier? #'self)
+  (defsyntax (instance stx)
+
+    (def (wrap-using-klass self klass body)
+      (with-syntax (((body ...) body) (self self) (klass klass))
+        (if (identifier? #'self)
       	#'(using (self :- klass) body ...)
       	#'(begin body ...))))
         
-        (def (wrap-using-interface var self Interface body)
-          (with-syntax ((body body) (self self) (var var) (Interface Interface))
-            (if (and (identifier? #'var) (identifier? #'self) (identifier? #'Interface)) 
-      	#'(using (var self :- Interface) body)
+    (def (wrap-using-interface var self Interface body)
+      (with-syntax ((body body) (self self) (var var) (Interface Interface))
+        (if (and (identifier? #'var) (identifier? #'self) (identifier? #'Interface)) 
+      	#'(using (var self : Interface) body)
       	#'(begin body))))
 
+    (def (wrap-next-method type::t self id fn)
+      (let ((next-sym (gensym)))
+        (with-syntax*
+  	  ((type::t type::t) (id id) (fn fn) (self self)
+  	   (next-sym (datum->syntax #'id next-sym))
+  	   (@next-method (stx-identifier #'id '@next-method))
+  	   (new-body
+  	    (syntax-case #'fn ()
+  	      ((lm args body ...)
+  	       #'(lm args
+  		     (let-syntax
+  			 ((@next-method
+  			   (syntax-rules ()
+  			     ((_ arg (... ...))
+  			      (next-sym self arg (... ...))))))
+  		       body ...))))))
+  	#'(let (next-sym #f)
+  	    (set! next-sym
+  	      (lambda (obj . args)
+  		(def next-meth (next-method type::t obj 'id))
+  		(if (not next-meth) (error "Cannot find next method" 'id type::t)
+  		    (begin (set! next-sym next-meth)
+  			   (apply next-meth obj args)))))
+  	    new-body))))
 
-        (def (expand-method-lambda id self klass type::t Interface var args body)
-          (with-syntax* ((args args) ((body ...) body) (klass klass) (type::t type::t)
-  		       (self self) (var var) (id id) (Interface Interface)
-      		       (tbody (wrap-using-klass #'self #'klass #'(body ...)))
-      		       (ibody (wrap-using-interface #'var #'self #'Interface #'tbody))
-      		       ((real-body ...) (cond ((and (identifier? #'self) (identifier? #'var))
-      					       #'(ibody))
-      					      ((identifier? #'self) #'(tbody))
-      					      (else #'(body ...))))
-  		       (real-self (if (identifier? #'self) #'self
-  				      (datum->syntax #'id (gensym))))
-  		       (real-args (if (stx-list? #'args)
-  				    (with-syntax (((args ...) #'args))
-  				      #'(real-self args ...))))
-  		       (real-lambda  #'(lambda real-args real-body ...))
-  		       (method-fn (wrap-next-method #'type::t #'self #'id #'real-lambda))
-  		       )
+    (def (expand-method-lambda id self klass type::t Interface var args body (dot-arg #f))
+      (with-syntax* ((args args) ((body ...) body) (klass klass) (type::t type::t)
+  		   (self self) (var var) (id id) (Interface Interface)
+      		   (tbody (wrap-using-klass #'self #'klass #'(body ...)))
+  		   (real-self (if (identifier? #'self) #'self
+  				  (datum->syntax #'id (gensym))))
+      		   (ibody (wrap-using-interface #'var #'real-self #'Interface #'tbody))
+      		   ((real-body ...) (cond ((identifier? #'var)
+      					   #'(ibody))
+      					  ((identifier? #'self) #'(tbody))
+      					  (else #'(body ...))))
+  		   (real-args (if (stx-list? #'args)
+  				(with-syntax (((args ...) #'args) (darg dot-arg))
+  				  (if dot-arg #'(real-self args ... . daarg)
+  				      #'(real-self args ...)))
+  				#'(real-self . args)))
+  		   (real-lambda  #'(lambda real-args real-body ...))
+  		   (method-fn (wrap-next-method #'type::t #'real-self #'id #'real-lambda)))
   	  
-            #'method-fn))
+        #'method-fn))
 
-        (def (wrap-next-method type::t self id fn)
-  	(let ((next-sym (gensym)))
-  	  (with-syntax*
-  	      ((type::t type::t) (id id) (fn fn) (self self)
-  	       (next-sym (datum->syntax #'id next-sym))
-  	       (@next-method (stx-identifier #'id '@next-method))
-  	       (new-body
-  		(syntax-case #'fn ()
-  		  ((lm args body ...)
-  		   #'(lm args
-  			 (let-syntax
-  			     ((@next-method
-  			       (syntax-rules ()
-  				 ((_ arg (... ...))
-  				  (next-sym self arg (... ...))))))
-  			   body ...))))))
-  	    #'(let (next-sym #f)
-  		(set! next-sym
-  		  (lambda (obj . args)
-  		    (def next-meth (next-method type::t obj 'id))
-  		    (if (not next-meth) (error "Cannot find next method" 'id type::t)
-  			(begin (set! next-sym next-meth)
-  			       (apply next-meth obj args)))))
-  		new-body))))
-
-        (def (expand-bind-method type::t id rebind?
-      			   ;; lambda
-
+    (def (expand-bind-method type::t id rebind?
       			   self klass Interface var args body)
-          (with-syntax* ((type::t type::t) (id id) (self self) (klass klass)
+      (with-syntax* ((type::t type::t) (id id) (self self) (klass klass)
       		   (Interface Interface) (var var) (args args) (body body) (rebind? rebind?)
       		   (fn (expand-method-lambda #'id #'self #'klass #'type::t #'Interface
-      					#'var #'args #'body)))
-      		  #'(bind-method! type::t 'id fn rebind?)))
+      					     #'var #'args #'body)))
+        #'(bind-method! type::t 'id fn rebind?)))
           
-          
-      		
-         
-            
-        (def (expand-method klass type::t self Interface var mdef rebind?)
-          (with-syntax ((self self) (klass klass) (mdef mdef) (type::t type::t) (var var)
+    (def (expand-method klass type::t self Interface var mdef rebind?)
+      (with-syntax ((self self) (klass klass) (mdef mdef) (type::t type::t) (var var)
       		  (Interface Interface) (rebind? rebind?))
-            (syntax-case #'mdef ()
-      	(((id args ...) body ...)
-      	 (with-syntax ((nargs (datum->syntax #'id '(n . a))))
+        (syntax-case #'mdef ()
+  	(((id args ...) body ...)
       	   (expand-bind-method #'type::t #'id #'rebind? #'self #'klass
-      			       #'Interface #'var #'(args ...) #'(body ...))
-      	   #;(expand-method-lambda #'self #'klass #'type::t #'Interface #'var #'(self args ...) #'(body ...)))))
-      ))
-        (def (expand-methods Interface var klass type::t self methods rebind?)
-          (with-syntax (((methods ...) methods) (var var) (Interface Interface) (rebind? rebind?)
-  		      (klass klass) (self self) (type::t type::t))
+      			       #'Interface #'var #'(args ...) #'(body ...)))
+  	(((id . arg) body ...)
+      	   (expand-bind-method #'type::t #'id #'rebind? #'self #'klass
+      			       #'Interface #'var #'arg #'(body ...)))
+      	(((id args ... . dot-arg) body ...)
+      	   (expand-bind-method #'type::t #'id #'rebind? #'self #'klass
+      			       #'Interface #'var #'(args ...) #'(body ...) #'dot-arg)))))
+
+    (def (expand-methods Interface var klass type::t self methods rebind?)
+      (with-syntax (((methods ...) methods) (var var) (Interface Interface) (rebind? rebind?)
+  		  (klass klass) (self self) (type::t type::t))
   	  
-            (let lp ((rest #'(methods ...)) (body []))
+        (let lp ((rest #'(methods ...)) (body []))
       	(syntax-case rest ()
       	  ((mdef . rest)
-      	   (lp #'rest (cons ;#'mdef
+      	   (lp #'rest (cons		;#'mdef
       		       (expand-method #'klass #'type::t #'self #'Interface #'var #'mdef #'rebind?)
       		       body)))
       	  (() (cons 'begin (reverse body)))))))
 
-        (syntax-case stx ()
-          ((_ Interface: Interface var: var Klass: klass self: self TypeT: type::t rebind: rebind?
+    (syntax-case stx ()
+      ((_ Interface: Interface var: var Klass: klass self: self TypeT: type::t rebind: rebind?
       	methods ...)
-          (expand-methods #'Interface #'var #'klass #'type::t #'self #'(methods ...) #'rebind?)
-          )
-  	((macro (Interface var) (Klass self) methods ... rebind: rebind?)
-  	 (with-syntax* (((values klass)
-  			(syntax-local-value #'Klass))
-  		       (type::t (runtime-type-identifier klass)))
+       (expand-methods #'Interface #'var #'klass #'type::t #'self #'(methods ...) #'rebind?))
+      ((macro (Interface var) (Klass self) methods ... rebind: rebind?)
+       (let ((singleton? (not (syntax-local-type-info? #'Klass))))
+         (with-syntax* (((values klass)
+  		       (if singleton?
+  			 (syntax-local-value (format-id #'Klass "~a::class" #'Klass))
+  			 (syntax-local-value #'Klass)))
+  		      (type::t (runtime-type-identifier klass)))
   	   
   	 
-  	   #'(macro Interface: Interface var: var
-  		    Klass: Klass self: self
-  		    TypeT: type::t rebind: rebind?
-  		    methods ...)))
-  	((macro no-rebind ...)
-  	 #'(macro no-rebind ... rebind: #f))
-
-  ))
+         #'(macro Interface: Interface var: var
+  		Klass: Klass self: self
+  		TypeT: type::t rebind: rebind?
+  		methods ...))))
+      ((macro Interface (Klass self) rest ... rebind: r)
+       #'(macro (Interface #f) (Klass self) rest ... rebind: r))
+      ((macro (Interface var) Klass rest ... rebind: r)
+       #'(macro (Interface var) (Klass #f) rest ... rebind: r))
+      ((macro Interface Klass rest ... rebind: r)
+       #'(macro (Interface #f) (Klass #f) rest ... rebind: r))
+      ((macro no-rebind ...)
+       #'(macro no-rebind ... rebind: #f))))
            
            
-      (defsyntax (instance stx)
-        (syntax-case stx ()
-          ((_ interface (instance self) methods ...)
-           (let lp ((rest #'(methods ...)) (body []))
-      	(syntax-case rest ()
-      	  ((m . rest)
-      	   (syntax-case #'m ()
-      	     (((name . arg) bdy ...)
-      	      (lp #'rest (cons #'(bind-method! klass 'name 
-      				   (lambda (self . arg) bdy ...) #t)
-      		       body)))
-      	     (((name args ...) bdy ...)
-      	      (lp #'rest (cons #'(bind-method
-      			  klass 'name
-      				  (lambda (self args ...) bdy ...) #t)
-      			       body)))))
+      ;; (defsyntax (instance stx)
+      ;;   (syntax-case stx ()
+      ;;     ((_ interface (instance self) methods ...)
+      ;;      (let lp ((rest #'(methods ...)) (body []))
+      ;; 	(syntax-case rest ()
+      ;; 	  ((m . rest)
+      ;; 	   (syntax-case #'m ()
+      ;; 	     (((name . arg) bdy ...)
+      ;; 	      (lp #'rest (cons #'(bind-method! klass 'name 
+      ;; 				   (lambda (self . arg) bdy ...) #t)
+      ;; 		       body)))
+      ;; 	     (((name args ...) bdy ...)
+      ;; 	      (lp #'rest (cons #'(bind-method
+      ;; 			  klass 'name
+      ;; 				  (lambda (self args ...) bdy ...) #t)
+      ;; 			       body)))))
       	  
-      	  (() (let (ti? (syntax-local-type-info? #'instance))
-      		(with-syntax* (((values iname)
-      				(if ti?
-      	       			  (syntax-local-value #'instance)
-      			       (values #'instance)
-      			       ))
-      	      		     (type::t (if ti?
-      	       				(runtime-type-identifier iname)
-      				        #'(##structure-type instance)))
-      			      )
+      ;; 	  (() (let (ti? (syntax-local-type-info? #'instance))
+      ;; 		(with-syntax* (((values iname)
+      ;; 				(if ti?
+      ;; 	       			  (syntax-local-value #'instance)
+      ;; 			       (values #'instance)
+      ;; 			       ))
+      ;; 	      		     (type::t (if ti?
+      ;; 	       				(runtime-type-identifier iname)
+      ;; 				        #'(##structure-type instance)))
+      ;; 			      )
 
-      		(cons* 'let #'(klass type::t)
+      ;; 		(cons* 'let #'(klass type::t)
       		               
-      		       (reverse body))))))))
+      ;; 		       (reverse body))))))))
 
 
-          ((macro interface instance methods ...)
-           #'(macro interface (instance instance) methods ...))))
+      ;;     ((macro interface instance methods ...)
+      ;;      #'(macro interface (instance instance) methods ...))))
 #+end_src
 
 So our Identity monad is simple.
@@ -652,7 +660,7 @@ So our Identity monad is simple.
 * The =List= monad
 
 #+begin_src scheme :tangle monad/List.ss
-  (import ./syntax :std/srfi/1) (export #t)
+  (import ./syntax ../instance :std/srfi/1) (export #t)
   (type List)
 
   (instance Monad List
@@ -677,7 +685,7 @@ The state transformer is fairly simple as we wrap the =[value
 . state]= in the other monad and unwrap it for bind.
 
 #+begin_src scheme :tangle monad/State.ss
-  (import ./syntax ./interface) (export #t)
+  (import ./syntax ./interface ../instance) (export #t)
 
   (defstruct StateT (inner))
 
@@ -966,12 +974,104 @@ Setting the predicate deals with the short.
     ((set thing) (call-inner (et ErrorT MonadState) set thing)))
 #+end_src
 
+* Next Method vs inner
+
+Now that we have caching of the next method, and since we are
+sometimes in the Object-Oriented paradigm, I think that =@next-method=
+will be faster than =inner= monad calls.
+
+#+begin_src scheme
+  (import :std/error :drewc/monad/interface :drewc/instance)
+
+  (defstruct ErrorInner (inner))  
+
+  (instance Monad (ErrorInner et)
+    ((return a) (du (i (ErrorInner-inner et) : Monad) (i.return a)))
+    ((bind ma f)
+     (if (Error? ma) ma (du (i (ErrorInner-inner et) : Monad) (i.bind ma f)))))
+
+  (def EI (ErrorInner (StateT List)))
+
+
+  (defstruct (ErrorInnerMonad ErrorInner) (interface) constructor: :init!)
+
+  (defmethod {:init! ErrorInnerMonad}
+    (lambda (self inner)
+      (set! (ErrorInner-inner self) inner)
+      (set! (ErrorInnerMonad-interface self) (Monad inner))))
+
+
+  (instance Monad (ErrorInnerMonad et)
+    ((return a) (du (i et.interface :- Monad) (i.return a)))
+    ((bind ma f)
+     (if (Error? ma) ma (du (et.interface : Monad) (i.bind ma f)))))
+
+  (def EIM (ErrorInner (StateT List)))
+
+
+  (defclass ErrorSuperClass ())  
+  (instance Monad (ErrorSuperClass es)
+    ((return a) (@next-method a))
+    ((bind ma f)
+     (if (Error? ma) ma (@next-method ma f))))
+  (defclass (EtESC ErrorSuperClass StateT) ())
+
+  (def EC (EtESC))
+
+  (set! (StateT-inner EC) List)
+
+
+  (def (test-bind-speed m (steps 10000))
+    (set! m (if (Monad? m) m (Monad m)))
+    (do((n 0 (+ 1 n)))
+       ((= n steps) n)
+      (let ((fn 
+  	   (du (m :- Monad) foo <- (m.return 42) (m.return foo))))
+        (fn n))))
+#+end_src
+
+
+Yup! A lot faster.
+
+#+begin_src scheme
+  > (time (test-bind-speed (Monad EI) 100000))
+  (time (test-bind-speed (std/interface#cast Monad::descriptor EI) '100000))
+      0.746080 secs real time
+      0.745377 secs cpu time (0.742779 user, 0.002598 system)
+      32 collections accounting for 0.170939 secs real time (0.169855 user, 0.000768 system)
+      454406832 bytes allocated
+      no minor faults
+      no major faults
+      2158776995 cpu cycles
+  100000
+  > (time (test-bind-speed (Monad EIM) 100000))
+  (time (test-bind-speed (std/interface#cast Monad::descriptor EIM) '100000))
+      0.746919 secs real time
+      0.746376 secs cpu time (0.743727 user, 0.002649 system)
+      32 collections accounting for 0.169476 secs real time (0.168573 user, 0.000779 system)
+      454405728 bytes allocated
+      no minor faults
+      no major faults
+      2161211324 cpu cycles
+  100000
+  > (time (test-bind-speed (Monad EC) 100000))
+  (time (test-bind-speed (std/interface#cast Monad::descriptor EC) '100000))
+      0.367308 secs real time
+      0.365100 secs cpu time (0.363552 user, 0.001548 system)
+      15 collections accounting for 0.080795 secs real time (0.079595 user, 0.000384 system)
+      220801968 bytes allocated
+      no minor faults
+      no major faults
+      1062789898 cpu cycles
+  100000
+#+end_src
+
 * General Monad Utility Functions
 
 
 
 #+begin_src scheme :tangle ./monad/util.ss
-  (import ./interface ./syntax
+  (import ./interface ./syntax)
   (def (liftM m f)
     (lambda (x)
       (du (m : Monad)
@@ -992,20 +1092,21 @@ Setting the predicate deals with the short.
 * Gerbil
 
 #+begin_src scheme :tangle ./build.ss :shebang #!/usr/bin/env gxi
-  ;;; -*- Gerbil -*-
-  (import :std/build-script)
+    ;;; -*- Gerbil -*-
+    (import :std/build-script)
 
-  (defbuild-script
-    '("monad/syntax"
-      "monad/interface"
-      "monad/util"
-      "monad/Identity"
-      "monad/List"
-      "monad/State"
-      "monad/Error"
-      "monad/Parser"
+    (defbuild-script
+      '("instance"
+        "monad/syntax"
+        "monad/interface"
+        "monad/util"
+        "monad/Identity"
+        "monad/List"
+        "monad/State"
+        "monad/Error"
+        "monad/Parser"
 
-      "Monad"))
+        "Monad"))
 
 #+end_src
 

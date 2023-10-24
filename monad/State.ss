@@ -1,4 +1,4 @@
-(import ./syntax ./interface) (export #t)
+(import ./syntax ./interface ../instance) (export #t)
 
 (defstruct StateT (inner))
 

@@ -1,5 +1,4 @@
-(import ./syntax :std/srfi/1) (export #t)
-
+(import ./syntax ../instance :std/srfi/1) (export #t)
 (type List)
 
 (instance Monad List

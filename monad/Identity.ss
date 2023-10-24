@@ -1,4 +1,4 @@
-(import ./syntax)
+(import ./syntax ../instance)
 
 (type Identity)
 

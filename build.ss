@@ -3,7 +3,10 @@
 (import :std/build-script)
 
 (defbuild-script
-  '("monad/syntax" "monad/interface"
+  '("instance"
+    "monad/syntax"
+    "monad/interface"
+    "monad/util"
     "monad/Identity"
     "monad/List"
     "monad/State"
